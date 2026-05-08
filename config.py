@@ -1,13 +1,12 @@
 import os
 
-FACTORY_ADDRESS  = "0x273b8fc139617f856fd3da0b89c29912a381901d"
+FACTORY_ADDRESS  = "0x2df4233860b0a9211ad822b4538b1fa9cd224619"
 RPC_URL          = "https://sepolia.base.org"
 CHAIN_ID         = 84532
 PLATFORM_WALLET  = os.environ.get("PLATFORM_WALLET", "0xab0f481fcae15f76af749b6adb699cf5566b45b6")
-DEPLOY_FEE       = 500000000000000
+DEPLOY_FEE       = 0
 
 def get_private_key():
-    # Try env var first (Render), fall back to .env file (Termux)
     key = os.environ.get("PRIVATE_KEY", "")
     if key:
         return key

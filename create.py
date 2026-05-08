@@ -67,7 +67,7 @@ def deploy_token(private_key_hex, name, symbol, description, image_uri="ipfs://p
         'gasPrice': gas_price,
         'gas':      gas_limit,
         'to':       config.FACTORY_ADDRESS,
-        'value':    config.DEPLOY_FEE,
+        'value':    0,
         'data':     data
     }
 
