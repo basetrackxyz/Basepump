@@ -1,6 +1,6 @@
 import os
 
-FACTORY_ADDRESS  = "0x2df4233860b0a9211ad822b4538b1fa9cd224619"
+FACTORY_ADDRESS  = "0xe541be864a62d36f1c298651ceabc0129abfa2cc"
 RPC_URL          = "https://sepolia.base.org"
 CHAIN_ID         = 84532
 PLATFORM_WALLET  = os.environ.get("PLATFORM_WALLET", "0xab0f481fcae15f76af749b6adb699cf5566b45b6")
