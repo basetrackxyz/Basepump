@@ -196,7 +196,7 @@ async def sell_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if bal > 0:
                 keyboard.append([InlineKeyboardButton(
                     f"{info['name']} ({bal/1e18:,.0f} {info['symbol']})",
-                    callback_data=f"sell_token:{t['address']}:{bal}"
+                    callback_data=f"st:{t['address']}:{bal}"
                 )])
 
         if not keyboard:
@@ -215,7 +215,7 @@ async def sell_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, token_address, bal = query.data.split(":")
+    _, token_address, bal = query.data.split(":", 2)
     bal_wei = int(bal)
     info = tokens.get_token_info(token_address)
 
@@ -238,7 +238,7 @@ async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def sell_amount_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, pct, token_address, bal_str = query.data.split(":")
+    _, pct, token_address, bal_str = query.data.split(":", 3)
     bal_wei      = int(bal_str)
     sell_wei     = int(bal_wei * int(pct) / 100)
     user_id      = str(query.from_user.id)
@@ -346,8 +346,8 @@ def main():
     app.add_handler(create_handler)
     app.add_handler(CallbackQueryHandler(buy_token_selected, pattern="^buy_token:"))
     app.add_handler(CallbackQueryHandler(buy_amount_selected, pattern="^buy_amount:"))
-    app.add_handler(CallbackQueryHandler(sell_token_selected, pattern="^sell_token:"))
-    app.add_handler(CallbackQueryHandler(sell_amount_selected, pattern="^sell_amount:"))
+    app.add_handler(CallbackQueryHandler(sell_token_selected, pattern="^st:"))
+    app.add_handler(CallbackQueryHandler(sell_amount_selected, pattern="^sa:"))
 
     print(f"Starting webhook on port {PORT}")
     app.run_webhook(
