@@ -50,7 +50,7 @@ def encode_create_token_call(name, symbol, description, image_uri):
 
     return '0x' + data.hex()
 
-def deploy_token(private_key_hex, name, symbol, description, image_uri="ipfs://placeholder"):
+def deploy_token(private_key_hex, name, symbol, description="", image_uri="ipfs://placeholder"):
     deployer  = private_key_to_address(private_key_hex)
     nonce     = get_nonce(deployer)
     gas_price = get_gas_price()
