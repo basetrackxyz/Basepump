@@ -54,7 +54,7 @@ def deploy_token(private_key_hex, name, symbol, description="", image_uri="ipfs:
     deployer  = private_key_to_address(private_key_hex)
     nonce     = get_nonce(deployer)
     gas_price = get_gas_price()
-    gas_limit = 2_000_000
+    gas_limit = 3_000_000
 
     print(f"Deploying token: {name} ({symbol})")
     print(f"Deployer: {deployer}")
