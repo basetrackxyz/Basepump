@@ -1,6 +1,5 @@
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import logging
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -11,42 +10,31 @@ import balance
 import create
 import config
 
+logging.basicConfig(level=logging.INFO)
+
 BOT_TOKEN         = config.get_bot_token()
 ENCRYPTION_SECRET = config.get_encryption_secret()
+WEBHOOK_URL       = os.environ.get("WEBHOOK_URL", "https://basepump.onrender.com")
+PORT              = int(os.environ.get("PORT", 8080))
 
-NAME, SYMBOL, DESCRIPTION = range(3)
+NAME, SYMBOL = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = str(update.effective_user.id)
     username = update.effective_user.first_name or "anon"
-    existing = wallet.get_wallet(user_id)
-    if existing:
-        address, _ = existing
-        await update.message.reply_text(
-            f"👋 Welcome back, {username}!\n\n"
-            f"💼 Wallet: `{address}`\n\n"
-            f"/balance — check ETH\n"
-            f"/create — launch a token\n"
-            f"/export — get private key",
-            parse_mode="Markdown"
-        )
-    else:
-        address, _ = wallet.create_wallet(user_id, ENCRYPTION_SECRET + user_id)
-        await update.message.reply_text(
-            f"🚀 Welcome to BasePump, {username}!\n\n"
-            f"✅ Wallet created:\n`{address}`\n\n"
-            f"⚠️ Custodial wallet. Use /export to self-custody.\n\n"
-            f"Use /create to launch your first token.",
-            parse_mode="Markdown"
-        )
+    address, _ = wallet.get_wallet(user_id, ENCRYPTION_SECRET)
+    await update.message.reply_text(
+        f"🚀 Welcome to BasePump, {username}!\n\n"
+        f"💼 Your wallet:\n`{address}`\n\n"
+        f"/balance — check ETH\n"
+        f"/create — launch a token\n"
+        f"/export — get private key",
+        parse_mode="Markdown"
+    )
 
 async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    row = wallet.get_wallet(user_id)
-    if not row:
-        await update.message.reply_text("No wallet. Send /start first.")
-        return
-    address, _ = row
+    address, _ = wallet.get_wallet(user_id, ENCRYPTION_SECRET)
     await update.message.reply_text("⏳ Checking...")
     try:
         eth   = balance.get_eth_balance(address)
@@ -65,12 +53,7 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    row = wallet.get_wallet(user_id)
-    if not row:
-        await update.message.reply_text("No wallet. Send /start first.")
-        return
-    _, encrypted_key = row
-    priv = wallet.decrypt_key(encrypted_key, ENCRYPTION_SECRET + user_id)
+    priv = wallet.decrypt_key(user_id, ENCRYPTION_SECRET)
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -84,24 +67,20 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    row = wallet.get_wallet(user_id)
-    if not row:
-        await update.message.reply_text("No wallet. Send /start first.")
-        return ConversationHandler.END
-    address, _ = row
+    address, _ = wallet.get_wallet(user_id, ENCRYPTION_SECRET)
     eth = balance.get_eth_balance(address)
-    if eth < 0.001:
+    if eth < 0.0001:
         await update.message.reply_text(
             f"❌ Insufficient balance.\n\n"
             f"You have `{eth:.6f} ETH`.\n"
-            f"Need at least `0.001 ETH`.\n\n"
+            f"Need a small amount of ETH for gas.\n\n"
             f"Deposit to:\n`{address}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
     await update.message.reply_text(
         "🚀 *Create a new token*\n\n"
-        "Step 1/3: What is your token name?\n"
+        "Step 1/2: What is your token name?\n"
         "_(e.g. Pepe Coin)_",
         parse_mode="Markdown"
     )
@@ -115,7 +94,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['token_name'] = name
     await update.message.reply_text(
         f"✅ Name: *{name}*\n\n"
-        f"Step 2/3: Token symbol?\n_(e.g. PEPE, max 10 chars)_",
+        f"Step 2/2: Token symbol?\n_(e.g. PEPE, max 10 chars)_",
         parse_mode="Markdown"
     )
     return SYMBOL
@@ -126,30 +105,15 @@ async def get_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Symbol must be 1-10 chars. Try again:")
         return SYMBOL
     context.user_data['token_symbol'] = symbol
-    await update.message.reply_text(
-        f"✅ Symbol: *{symbol}*\n\n"
-        f"Step 3/3: Short description?\n_(max 200 chars)_",
-        parse_mode="Markdown"
-    )
-    return DESCRIPTION
-
-async def get_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    description = update.message.text.strip()
-    if len(description) > 200:
-        await update.message.reply_text("❌ Max 200 chars. Try again:")
-        return DESCRIPTION
     name    = context.user_data['token_name']
-    symbol  = context.user_data['token_symbol']
     user_id = str(update.effective_user.id)
     await update.message.reply_text(
         f"⏳ Deploying *{name}* (${symbol})...\n\nThis may take 30-60 seconds.",
         parse_mode="Markdown"
     )
     try:
-        row = wallet.get_wallet(user_id)
-        _, encrypted_key = row
-        priv_key = wallet.decrypt_key(encrypted_key, ENCRYPTION_SECRET + user_id)
-        token_address, tx_hash = create.deploy_token(priv_key, name, symbol, description)
+        priv_key = wallet.decrypt_key(user_id, ENCRYPTION_SECRET)
+        token_address, tx_hash = create.deploy_token(priv_key, name, symbol)
         if token_address:
             await update.message.reply_text(
                 f"🎉 *{name}* (${symbol}) launched!\n\n"
@@ -173,39 +137,31 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'BasePump is running')
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), Handler)
-    server.serve_forever()
-
 def main():
     wallet.init_db()
-    threading.Thread(target=run_server, daemon=True).start()
-    print(f"HTTP server started")
     app = Application.builder().token(BOT_TOKEN).build()
+
     create_handler = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-            NAME:        [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            SYMBOL:      [MessageHandler(filters.TEXT & ~filters.COMMAND, get_symbol)],
-            DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_description)],
+            NAME:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_symbol)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("balance", check_balance))
     app.add_handler(CommandHandler("export", export))
     app.add_handler(create_handler)
-    print("Bot running...")
-    app.run_polling()
+
+    print(f"Starting webhook on port {PORT}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=f"{WEBHOOK_URL}/webhook",
+        url_path="webhook"
+    )
 
 if __name__ == "__main__":
     main()

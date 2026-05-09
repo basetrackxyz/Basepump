@@ -1,11 +1,9 @@
-import os
-import sqlite3
-import hashlib
 import hmac
-import struct
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
+import hashlib
+import sqlite3
 import json
+import os
+from Crypto.Hash import keccak
 
 # ── Secp256k1 constants ──────────────────────────────────────────
 P  = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -43,69 +41,35 @@ def private_key_to_address(priv_hex):
     x_bytes = pub[0].to_bytes(32, 'big')
     y_bytes = pub[1].to_bytes(32, 'big')
     pub_bytes = x_bytes + y_bytes
-    # Keccak-256
-    from Crypto.Hash import keccak
     k = keccak.new(digest_bits=256)
     k.update(pub_bytes)
     addr = k.hexdigest()[-40:]
     return '0x' + addr
 
-# ── Encryption ───────────────────────────────────────────────────
-def encrypt_key(priv_hex, password):
-    salt = get_random_bytes(16)
-    key = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
-    cipher = AES.new(key, AES.MODE_GCM)
-    ct, tag = cipher.encrypt_and_digest(priv_hex.encode())
-    return json.dumps({
-        'salt': salt.hex(),
-        'nonce': cipher.nonce.hex(),
-        'tag': tag.hex(),
-        'ct': ct.hex()
-    })
+def derive_private_key(secret, telegram_id):
+    """Deterministically derive private key from secret + telegram_id"""
+    key = hmac.new(
+        secret.encode('utf-8'),
+        str(telegram_id).encode('utf-8'),
+        hashlib.sha256
+    ).digest()
+    # Ensure valid private key (1 <= key < N)
+    priv_int = int.from_bytes(key, 'big') % (N - 1) + 1
+    return priv_int.to_bytes(32, 'big').hex()
 
-def decrypt_key(encrypted_json, password):
-    d = json.loads(encrypted_json)
-    salt = bytes.fromhex(d['salt'])
-    key = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=bytes.fromhex(d['nonce']))
-    return cipher.decrypt_and_verify(
-        bytes.fromhex(d['ct']),
-        bytes.fromhex(d['tag'])
-    ).decode()
-
-# ── Database ─────────────────────────────────────────────────────
-def init_db():
-    conn = sqlite3.connect('basepump.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS wallets (
-            telegram_id TEXT PRIMARY KEY,
-            address TEXT NOT NULL,
-            encrypted_key TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def create_wallet(telegram_id, password):
-    priv_hex = os.urandom(32).hex()
-    address = private_key_to_address(priv_hex)
-    encrypted = encrypt_key(priv_hex, password)
-    conn = sqlite3.connect('basepump.db')
-    c = conn.cursor()
-    c.execute(
-        'INSERT OR IGNORE INTO wallets (telegram_id, address, encrypted_key) VALUES (?, ?, ?)',
-        (str(telegram_id), address, encrypted)
-    )
-    conn.commit()
-    conn.close()
+def get_wallet(telegram_id, secret="GUGA GAGA"):
+    """Get wallet for user — derived deterministically, no DB needed"""
+    # Check env secret first
+    secret = os.environ.get("ENCRYPTION_SECRET", secret)
+    priv_hex = derive_private_key(secret, telegram_id)
+    address  = private_key_to_address(priv_hex)
     return address, priv_hex
 
-def get_wallet(telegram_id):
-    conn = sqlite3.connect('basepump.db')
-    c = conn.cursor()
-    c.execute('SELECT address, encrypted_key FROM wallets WHERE telegram_id = ?', (str(telegram_id),))
-    row = c.fetchone()
-    conn.close()
-    return row  # (address, encrypted_key) or None
+def decrypt_key(telegram_id, secret="GUGA GAGA"):
+    """Get private key for user"""
+    secret = os.environ.get("ENCRYPTION_SECRET", secret)
+    return derive_private_key(secret, telegram_id)
+
+def init_db():
+    """No-op — kept for compatibility"""
+    pass
