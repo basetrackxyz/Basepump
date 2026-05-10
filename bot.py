@@ -19,7 +19,7 @@ ENCRYPTION_SECRET = config.get_encryption_secret()
 WEBHOOK_URL       = os.environ.get("WEBHOOK_URL", "https://basepump.onrender.com")
 PORT              = int(os.environ.get("PORT", 8080))
 
-NAME, SYMBOL, BUY_AMOUNT, SELL_AMOUNT = range(4)
+NAME, SYMBOL = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = str(update.effective_user.id)
@@ -68,14 +68,14 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type != "private":
             await update.message.reply_text("✅ Sent to DMs.")
     except:
-        await update.message.reply_text("❌ DM failed. Chat with bot privately first.")
+        await update.message.reply_text("❌ DM failed. Chat privately first.")
 
 async def list_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Loading tokens...")
     try:
         token_list = tokens.get_all_tokens()
         if not token_list:
-            await update.message.reply_text("No tokens launched yet. Be the first! /create")
+            await update.message.reply_text("No tokens yet. Be the first! /create")
             return
         msg = "🪙 *Tokens on BasePump:*\n\n"
         for i, t in enumerate(token_list[:10]):
@@ -83,7 +83,7 @@ async def list_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += (
                 f"{i+1}. *{info['name']}* (${info['symbol']})\n"
                 f"   `{t['address']}`\n"
-                f"   Supply: {info['total_supply']:,.0f} | ETH: {info['eth_collected']:.4f}\n\n"
+                f"   Supply: {info['total_supply']:,.2f} | ETH: {info['eth_collected']:.4f}\n\n"
             )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
@@ -98,20 +98,23 @@ async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Insufficient balance: `{eth:.6f} ETH`\n\nDeposit to:\n`{address}`",
             parse_mode="Markdown"
         )
-        return ConversationHandler.END
+        return
 
     try:
         token_list = tokens.get_all_tokens()
         if not token_list:
             await update.message.reply_text("No tokens available. /create one first!")
-            return ConversationHandler.END
+            return
+
+        # Store in context for later use
+        context.bot_data['token_list'] = token_list
 
         keyboard = []
-        for t in token_list[:8]:
+        for i, t in enumerate(token_list[:8]):
             info = tokens.get_token_info(t['address'])
             keyboard.append([InlineKeyboardButton(
                 f"{info['name']} (${info['symbol']})",
-                callback_data=f"buy_token:{t['address']}"
+                callback_data=f"bt:{i}"
             )])
 
         await update.message.reply_text(
@@ -121,27 +124,28 @@ async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-    return ConversationHandler.END
 
 async def buy_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    token_address = query.data.split(":")[1]
-    context.user_data['buy_token'] = token_address
+    idx = int(query.data.split(":")[1])
+    token_list = context.bot_data.get('token_list', [])
+    if not token_list or idx >= len(token_list):
+        await query.edit_message_text("❌ Token not found. Try /buy again.")
+        return
 
+    token_address = token_list[idx]['address']
+    context.user_data['buy_token'] = token_address
     info = tokens.get_token_info(token_address)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("0.001 ETH", callback_data=f"buy_amount:0.001:{token_address}"),
-            InlineKeyboardButton("0.005 ETH", callback_data=f"buy_amount:0.005:{token_address}"),
-            InlineKeyboardButton("0.01 ETH",  callback_data=f"buy_amount:0.01:{token_address}"),
-        ]
-    ]
+    keyboard = [[
+        InlineKeyboardButton("0.001 ETH", callback_data=f"ba:0.001:{idx}"),
+        InlineKeyboardButton("0.005 ETH", callback_data=f"ba:0.005:{idx}"),
+        InlineKeyboardButton("0.01 ETH",  callback_data=f"ba:0.01:{idx}"),
+    ]]
 
     await query.edit_message_text(
-        f"🪙 *{info['name']}* (${info['symbol']})\n\n"
-        f"Select amount to buy:",
+        f"🪙 *{info['name']}* (${info['symbol']})\n\nSelect amount:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -149,24 +153,28 @@ async def buy_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def buy_amount_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, amount_eth, token_address = query.data.split(":")
-    amount_wei = int(float(amount_eth) * 1e18)
+    _, amount_eth, idx = query.data.split(":")
+    idx = int(idx)
+    token_list = context.bot_data.get('token_list', [])
+    if not token_list or idx >= len(token_list):
+        await query.edit_message_text("❌ Session expired. Try /buy again.")
+        return
 
-    user_id = str(query.from_user.id)
-    info    = tokens.get_token_info(token_address)
+    token_address = token_list[idx]['address']
+    amount_wei    = int(float(amount_eth) * 1e18)
+    user_id       = str(query.from_user.id)
+    info          = tokens.get_token_info(token_address)
 
     await query.edit_message_text(
-        f"⏳ Buying {amount_eth} ETH of *{info['name']}* (${info['symbol']})...",
+        f"⏳ Buying {amount_eth} ETH of *{info['name']}*...",
         parse_mode="Markdown"
     )
 
     try:
-        priv_key = wallet.decrypt_key(user_id, ENCRYPTION_SECRET)
-        tx_hash  = buymodule.buy_tokens(priv_key, token_address, amount_wei)
-
-        # Get updated balance
+        priv_key  = wallet.decrypt_key(user_id, ENCRYPTION_SECRET)
+        tx_hash   = buymodule.buy_tokens(priv_key, token_address, amount_wei)
         address, _ = wallet.get_wallet(user_id, ENCRYPTION_SECRET)
-        token_bal  = tokens.get_token_balance(token_address, address)
+        token_bal = tokens.get_token_balance(token_address, address)
 
         await query.edit_message_text(
             f"🎉 Bought *{info['name']}* (${info['symbol']})\n\n"
@@ -187,21 +195,23 @@ async def sell_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token_list = tokens.get_all_tokens()
         if not token_list:
             await update.message.reply_text("No tokens available.")
-            return ConversationHandler.END
+            return
+
+        context.bot_data['token_list'] = token_list
 
         keyboard = []
-        for t in token_list[:8]:
+        for i, t in enumerate(token_list[:8]):
             info = tokens.get_token_info(t['address'])
             bal  = tokens.get_token_balance(t['address'], address)
             if bal > 0:
                 keyboard.append([InlineKeyboardButton(
-                    f"{info['name']} ({bal/1e18:,.0f} {info['symbol']})",
-                    callback_data=f"st:{t['address']}:{bal}"
+                    f"{info['name']} ({bal/1e18:,.2f} {info['symbol']})",
+                    callback_data=f"st:{i}:{bal}"
                 )])
 
         if not keyboard:
             await update.message.reply_text("You don't own any tokens. /buy first!")
-            return ConversationHandler.END
+            return
 
         await update.message.reply_text(
             "💸 *Select a token to sell:*",
@@ -210,27 +220,32 @@ async def sell_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-    return ConversationHandler.END
 
 async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, token_address, bal = query.data.split(":", 2)
-    bal_wei = int(bal)
+    parts = query.data.split(":")
+    idx     = int(parts[1])
+    bal_wei = int(parts[2])
+    token_list = context.bot_data.get('token_list', [])
+    if not token_list or idx >= len(token_list):
+        await query.edit_message_text("❌ Session expired. Try /sell again.")
+        return
+
+    token_address = token_list[idx]['address']
+    context.user_data['sell_token'] = token_address
+    context.user_data['sell_bal']   = bal_wei
     info = tokens.get_token_info(token_address)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("25%",  callback_data=f"sell_amount:25:{token_address}:{bal_wei}"),
-            InlineKeyboardButton("50%",  callback_data=f"sell_amount:50:{token_address}:{bal_wei}"),
-            InlineKeyboardButton("100%", callback_data=f"sell_amount:100:{token_address}:{bal_wei}"),
-        ]
-    ]
+    keyboard = [[
+        InlineKeyboardButton("25%",  callback_data=f"sa:25:{idx}:{bal_wei}"),
+        InlineKeyboardButton("50%",  callback_data=f"sa:50:{idx}:{bal_wei}"),
+        InlineKeyboardButton("100%", callback_data=f"sa:100:{idx}:{bal_wei}"),
+    ]]
 
     await query.edit_message_text(
         f"💸 *{info['name']}* (${info['symbol']})\n\n"
-        f"Balance: `{bal_wei/1e18:,.2f} {info['symbol']}`\n\n"
-        f"Select amount to sell:",
+        f"Balance: `{bal_wei/1e18:,.2f}`\n\nSelect % to sell:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -238,21 +253,28 @@ async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def sell_amount_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, pct, token_address, bal_str = query.data.split(":", 3)
-    bal_wei      = int(bal_str)
-    sell_wei     = int(bal_wei * int(pct) / 100)
+    parts        = query.data.split(":")
+    pct          = int(parts[1])
+    idx          = int(parts[2])
+    bal_wei      = int(parts[3])
+    sell_wei     = int(bal_wei * pct / 100)
     user_id      = str(query.from_user.id)
-    info         = tokens.get_token_info(token_address)
+    token_list   = context.bot_data.get('token_list', [])
+    if not token_list or idx >= len(token_list):
+        await query.edit_message_text("❌ Session expired. Try /sell again.")
+        return
+
+    token_address = token_list[idx]['address']
+    info          = tokens.get_token_info(token_address)
 
     await query.edit_message_text(
-        f"⏳ Selling {pct}% of *{info['name']}* (${info['symbol']})...",
+        f"⏳ Selling {pct}% of *{info['name']}*...",
         parse_mode="Markdown"
     )
 
     try:
         priv_key = wallet.decrypt_key(user_id, ENCRYPTION_SECRET)
         tx_hash  = buymodule.sell_tokens(priv_key, token_address, sell_wei)
-
         await query.edit_message_text(
             f"✅ Sold {pct}% of *{info['name']}* (${info['symbol']})\n\n"
             f"📝 [TX](https://sepolia.basescan.org/tx/{tx_hash})",
@@ -344,10 +366,10 @@ def main():
     app.add_handler(CommandHandler("buy", buy_start))
     app.add_handler(CommandHandler("sell", sell_start))
     app.add_handler(create_handler)
-    app.add_handler(CallbackQueryHandler(buy_token_selected, pattern="^buy_token:"))
-    app.add_handler(CallbackQueryHandler(buy_amount_selected, pattern="^buy_amount:"))
+    app.add_handler(CallbackQueryHandler(buy_token_selected,  pattern="^bt:"))
+    app.add_handler(CallbackQueryHandler(buy_amount_selected, pattern="^ba:"))
     app.add_handler(CallbackQueryHandler(sell_token_selected, pattern="^st:"))
-    app.add_handler(CallbackQueryHandler(sell_amount_selected, pattern="^sa:"))
+    app.add_handler(CallbackQueryHandler(sell_amount_selected,pattern="^sa:"))
 
     print(f"Starting webhook on port {PORT}")
     app.run_webhook(
