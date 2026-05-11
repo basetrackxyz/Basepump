@@ -29,7 +29,7 @@ def get_all_tokens():
     topic = "0x" + k.digest().hex()
 
     current = get_current_block()
-    from_block = hex(max(0, current - 9000))
+    from_block = hex(max(0, current - 1900))
 
     logs = rpc("eth_getLogs", [{
         "address": config.FACTORY_ADDRESS,
